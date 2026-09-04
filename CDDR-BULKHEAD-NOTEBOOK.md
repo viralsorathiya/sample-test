@@ -1,5 +1,8 @@
 fetch logs, from: now()-30m, scanLimitGBytes: -1
 | filter matchesPhrase(content, "bpp-accounts-summary")
 | filter matchesPhrase(content, "502 Bad Gateway")
-| summarize failures = count(), last_failure = max(timestamp)
-| fieldsAdd minutes_ago = round(toLong(now() - last_failure) / 60000000000, decimals: 1)
+| parse content, "LD 'requestId=' LD:request_id ',' LD"
+| parse content, "LD 'relationships/' INT:relationship_id '/bpp-accounts-summary' LD"
+| fields timestamp, request_id, relationship_id, pod = k8s.pod.name, cluster = k8s.cluster.name
+| sort timestamp desc
+| limit 10
