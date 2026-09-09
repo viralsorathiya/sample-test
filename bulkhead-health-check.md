@@ -479,6 +479,82 @@ started.
 
 ---
 
+## 10. It is not a downstream service - narrowing the shared cause
+
+9a returned 16 hosts timing out in the same minute, across two domains
+(`apps2` and `apps3`). Sixteen independent services do not stall together. The cause
+is shared, and on CDDR's side of the connection.
+
+Candidates: DNS resolution, the Istio sidecar, node-level network or CPU pressure, or
+a stop-the-world GC pause.
+
+### 10a. Which pods, and which nodes
+
+If every affected pod sits on one node, it is node-level. If they are spread across
+nodes, it is not.
+
+```
+fetch logs, from: "2026-09-03T16:16:00Z", to: "2026-09-03T16:19:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter contains(content, "Got retryable IO")
+| summarize timeouts = count(), by: {k8s.pod.name, k8s.node.name}
+| sort timeouts desc
+```
+
+### 10b. Was it CPU throttling or GC
+
+First find what metrics exist:
+
+```
+fetch metric.series
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(metric.key, "cpu")
+      or matchesPhrase(metric.key, "throttl")
+      or matchesPhrase(metric.key, "gc")
+      or matchesPhrase(metric.key, "memory")
+| summarize series = count(), by: {metric.key}
+| sort metric.key asc
+```
+
+Then chart whichever throttling or GC pause metric appears, over
+Sep 3 09:15-09:20 local, `by: {k8s.pod.name}`, `interval: 1m`.
+
+A GC pause or CPU throttle on the pods would stall every outbound call at once and
+would also explain the 29% drop in log volume during that minute.
+
+### 10c. Was it DNS
+
+Look for resolution failures or slow lookups in the same window.
+
+```
+fetch logs, from: "2026-09-03T16:15:00Z", to: "2026-09-03T16:20:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "UnknownHostException")
+      or matchesPhrase(content, "Temporary failure in name resolution")
+      or matchesPhrase(content, "dns")
+| summarize lines = count(), by: {minute = bin(timestamp, 1m), k8s.namespace.name}
+| sort lines desc
+```
+
+Note this drops the bucket filter deliberately - if CoreDNS stalled, other namespaces
+would see it too, and that would be the strongest possible evidence.
+
+### 10d. Did other namespaces stall at the same minute
+
+The decisive test for a cluster-wide cause.
+
+```
+fetch logs, from: "2026-09-03T16:15:00Z", to: "2026-09-03T16:20:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts = count(), by: {minute = bin(timestamp, 1m), k8s.namespace.name}
+| sort timeouts desc
+```
+
+If several unrelated namespaces spike at 09:17, the problem is the cluster or its
+network, not CDDR. That moves this to the platform team.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
