@@ -696,6 +696,77 @@ since nothing inside a cluster can affect another one.
 
 ---
 
+## 14. Topology - what sits in front of apps2 and apps3
+
+Ten-plus clusters across two platforms and two sites stalled in the same minute. The
+shared element is the destination, not the source. This looks for what that is.
+
+### 14a. Does Dynatrace know these hostnames as entities
+
+```
+fetch dt.entity.service
+| filter matchesPhrase(entity.name, "apps2") or matchesPhrase(entity.name, "apps3")
+| fields id, entity.name, serviceType, agentTechnologyType
+| limit 50
+```
+
+If they appear as monitored services, open one and read its own error rate and
+response time for 09:17. If they appear only as external destinations, Dynatrace sees
+the call but not the far end.
+
+### 14b. What CDDR actually calls
+
+```
+fetch dt.entity.service
+| filter matchesPhrase(entity.name, "cddr")
+| fields id, entity.name, serviceType
+```
+
+Take the `cddr-main-subgraph` service id, open it in the UI, and use the service flow
+or Smartscape view to see its outbound dependencies. That shows how Dynatrace models
+the hop to apps2 - as a service, a process group, or an unmonitored host.
+
+### 14c. Hosts and process groups behind those names
+
+```
+fetch dt.entity.host
+| filter matchesPhrase(entity.name, "apps2") or matchesPhrase(entity.name, "apps3")
+| fields id, entity.name
+| limit 50
+```
+
+```
+fetch dt.entity.process_group
+| filter matchesPhrase(entity.name, "apps2") or matchesPhrase(entity.name, "apps3")
+| fields id, entity.name
+| limit 50
+```
+
+### In the UI
+
+Smartscape is the faster route if the queries come back thin:
+
+```
+Services -> search "apps2"        are they monitored at all
+Services -> cddr-main-subgraph    open it, then Service flow, and follow
+                                  the outbound calls
+Smartscape -> Services            shows the dependency graph directly
+```
+
+What you are looking for is a single component every one of those clusters routes
+through - a load balancer, an API gateway, a firewall, or a DNS resolver. If
+Dynatrace does not monitor it, the topology stops at the hostname and the answer has
+to come from the network team.
+
+### The question to ask them
+
+`apps2.edwardjones.com` and `apps3.edwardjones.com` both stalled at 09:17 on Sep 3,
+seen simultaneously from AKS and DKP clusters in both STL and PHX. What do those two
+names share - the same load balancer, the same firewall, the same DNS zone, the same
+egress path? That shared component is where the stall started.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
