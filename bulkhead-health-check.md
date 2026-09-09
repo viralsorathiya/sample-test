@@ -1093,6 +1093,32 @@ If `fetch events` returns nothing useful, try the problems feed in the UI filter
 that hour, with the entity filter cleared so it shows infrastructure as well as
 services.
 
+### 18d-2. Fix for 18d - filter on when the problem STARTED
+
+18d returned problems from 1 Sep. The timeframe filters on when the record was
+written, and an open problem keeps emitting records every interval, so you get
+everything still open rather than everything that began in the window.
+
+Filter on `event.start` and deduplicate by `display_id`.
+
+```
+fetch events, from: "2026-09-03T14:00:00Z", to: "2026-09-03T18:00:00Z", scanLimitGBytes: -1
+| filter event.kind == "DAVIS_PROBLEM"
+| filter event.start >= toTimestamp("2026-09-03T16:00:00Z")
+     and event.start <= toTimestamp("2026-09-03T16:40:00Z")
+| summarize started      = takeAny(event.start),
+            name         = takeAny(event.name),
+            root_cause   = takeAny(root_cause_entity_name),
+            entities     = takeAny(affected_entity_ids),
+            by: {display_id}
+| sort started asc
+| limit 30
+```
+
+Only problems that opened between 16:00 and 16:40 UTC. Anything on a host, network
+device or infrastructure entity is what matters - a service-level problem is just
+another victim.
+
 ### 18e. Rate-based ordering - the correct version of 18a
 
 First-occurrence does not work because timeouts are constant background. What matters
