@@ -767,6 +767,82 @@ egress path? That shared component is where the stall started.
 
 ---
 
+## 15. Are the apps2/apps3 backends monitored anywhere
+
+14a searched service entity names for "apps2"/"apps3" and found only two unrelated
+Salesforce proxies. But the DNS name is not necessarily the workload name - those
+services may run as Kubernetes workloads in monitored clusters under their own names.
+
+### 15a. Do the service names appear as workloads
+
+```
+fetch logs, from: now()-2d, to: now(), scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(k8s.namespace.name, "rms")
+      or matchesPhrase(k8s.namespace.name, "gna")
+      or matchesPhrase(k8s.namespace.name, "mfd")
+      or matchesPhrase(k8s.deployment.name, "rms-rltshp")
+      or matchesPhrase(k8s.deployment.name, "gna-accounts")
+      or matchesPhrase(k8s.deployment.name, "mfd-vndr")
+| summarize lines = count(), by: {k8s.cluster.name, k8s.namespace.name, k8s.deployment.name}
+| sort lines desc
+| limit 30
+```
+
+If any of them appear, open that workload and look at 09:17 on Sep 3 directly.
+
+### 15b. Service entities by the workload name rather than the DNS name
+
+```
+fetch dt.entity.service
+| filter matchesPhrase(entity.name, "rms-rltshp")
+      or matchesPhrase(entity.name, "gna-accounts")
+      or matchesPhrase(entity.name, "mfd-vndr")
+      or matchesPhrase(entity.name, "ins-account")
+| fields id, entity.name, serviceType
+| limit 30
+```
+
+### 15c. Hosts and process groups
+
+```
+fetch dt.entity.host
+| filter matchesPhrase(entity.name, "rms") or matchesPhrase(entity.name, "gna")
+| fields id, entity.name
+| limit 30
+```
+
+```
+fetch dt.entity.process_group
+| filter matchesPhrase(entity.name, "rms-rltshp") or matchesPhrase(entity.name, "gna-accounts")
+| fields id, entity.name
+| limit 30
+```
+
+### 15d. Anything logging from the server side at 09:17
+
+If these services are monitored at all, they would have logged something in that
+minute. This searches every bucket and every namespace.
+
+```
+fetch logs, from: "2026-09-03T16:16:00Z", to: "2026-09-03T16:19:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "rms-rltshp")
+      or matchesPhrase(content, "gna-accounts")
+      or matchesPhrase(content, "mfd-vndr")
+| summarize lines = count(), by: {k8s.cluster.name, k8s.namespace.name}
+| sort lines desc
+| limit 30
+```
+
+Rows that are NOT `cddr-ns` are the interesting ones - that would be someone else's
+view of the same services, or the services themselves.
+
+### If all four come back empty
+
+The backends are not in Dynatrace. Everything visible is the client side, and the
+answer has to come from whoever operates apps2/apps3 or the network path to them.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
