@@ -917,6 +917,54 @@ to the origin.
 
 ---
 
+## 17. Read the backend errors
+
+16a showed `gna-accounts-svc` logging 352 ERRORs at 09:17 - the only backend genuinely
+failing rather than merely slow. `rms-rltshp-svc` logged 94 lines total while CDDR was
+timing out on it 441 times, so it was not erroring, it just was not answering.
+
+### 17a. What gna-accounts-svc was failing on
+
+```
+fetch logs, from: "2026-09-03T16:16:00Z", to: "2026-09-03T16:19:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter k8s.cluster.name == "dkp-prod-phx-general"
+| filter k8s.namespace.name == "gna-accounts"
+| filter contains(k8s.deployment.name, "gna-accounts-svc")
+| filter loglevel == "ERROR"
+| fields timestamp, content
+| limit 5
+```
+
+### 17b. And the DKP management plane
+
+`kommander/prometheus-adapter` logged 718 timeouts in the same window. Kommander is
+DKP's own control plane - if that was stalling, the cause is below the applications.
+
+```
+fetch logs, from: "2026-09-03T16:16:00Z", to: "2026-09-03T16:19:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter k8s.cluster.name == "dkp-prod-phx-general"
+| filter k8s.namespace.name == "kommander"
+| filter matchesPhrase(content, "timeout") or matchesPhrase(content, "Read timed out")
+| fields timestamp, k8s.deployment.name, content
+| limit 5
+```
+
+### What the DKP side already tells us
+
+```
+rms-rltshp-svc     94 log lines    CDDR saw 441 timeouts to it
+mfd-acct-profile  105 log lines    CDDR saw 87
+gna-accounts-svc  352 ERROR        CDDR saw 124
+```
+
+The backends were not throwing errors in proportion to the timeouts CDDR saw. Calls
+were not arriving, or not being answered in time - which is the path between the
+clusters, not the applications at either end.
+
+Meanwhile DKP's own control plane was timing out too, which no application can cause.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
