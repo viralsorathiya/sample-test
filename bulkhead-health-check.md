@@ -167,7 +167,45 @@ threads have to be held before the pool runs out.
 
 ---
 
-## Result: 2026-09-03
+## 4. Raw log line - does it record how long the call took
+
+Run this next. Need to see whether the timeout duration is in the line.
+
+```
+fetch logs, from: "2026-09-03T15:00:00Z", to: "2026-09-03T17:00:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter contains(content, "Got retryable IO")
+| filter contains(content, "mfd-vndr-accts-rest")
+| fields timestamp, content
+| limit 3
+```
+
+Open one row and read the full text. Looking for a duration, an elapsed time, or a
+configured timeout value.
+
+Why it matters: Sep 3 had 1,188 timeouts against `mfd-vndr-accts-rest` and filled the
+bulkhead. Sep 7 had 970 against `rms-rltshp-svc` and did not. Similar volume, opposite
+outcome - so how long each call holds a thread, or how many times CDDR calls it per
+request, is the difference.
+
+### 4b. Calls per request, from the callChart lines
+
+```
+fetch logs, from: "2026-09-03T15:00:00Z", to: "2026-09-03T17:00:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(content, "callChart")
+| fields timestamp, content
+| limit 5
+```
+
+The callChart lines list each downstream call with its duration, like
+`Relationship call (183ms)`. That is where the per-call timing comes from.
+
+---
+
+## Results so far
+
+### 2026-09-03 - pod age at exception
 
 ```
 ESTABLISHED (over 1 hour)   1,120   6 pods
@@ -176,8 +214,52 @@ no_startup_line_found           4   1 pod
 ```
 
 96% established. Not a scale-up problem. Six pods that had been running over an hour
-stopped coping at the same time, which points at something they all depend on rather
-than anything about the pods themselves.
+stopped coping at the same time.
+
+### 2026-09-03 - downstream timeouts by hour (local)
+
+```
+hour     mfd-vndr-accts-rest   gna-accounts   rms-rltshp   cos-taxlotdata
+06:00                    611
+07:00                    237
+08:00                    630
+09:00                    251                         442
+10:00                    404
+11:00                  1,188            496
+12:00                    232            669
+13:00                    560
+14:00                                                                510
+```
+
+`mfd-vndr-accts-rest` is the dominant host, over 4,100 timeouts sustained across
+eight hours. The bulkhead exceptions ran 09:17-12:17, through its peak.
+
+### 2026-09-07 - the counter-example
+
+```
+rms-rltshp-svc           970
+gna-restrictions         860
+ins-account-svc          457
+fpl-fin-goals-rest       330
+con-network-rest         109
+cln-loans-details-svc     70
+```
+
+Six services timing out in the same hour, and **zero bulkhead exceptions**. Similar
+volume to Sep 3, opposite outcome.
+
+### What this changes
+
+Earlier analysis named `rms-rltshp-svc` as the recurring cause based on the August
+data. Sep 3 disproves that - a different service entirely, and Sep 7 shows rms-rltshp
+at high volume causing nothing.
+
+Timeout volume alone does not predict saturation.
+
+What holds: CDDR has one shared bulkhead of 50 for all queries. Any slow service
+behind `apps2.edwardjones.com` can fill it and take down every unrelated query with
+it. The recurring pattern is not a particular dependency - it is that the bulkhead
+does not isolate.
 
 ---
 
