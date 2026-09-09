@@ -250,6 +250,27 @@ fetch logs, from: "2026-09-07T17:00:00Z", to: "2026-09-07T19:00:00Z", scanLimitG
 
 ---
 
+## 6. RUN THIS NEXT - call durations during the peak
+
+```
+fetch logs, from: "2026-09-03T17:30:00Z", to: "2026-09-03T18:30:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(content, "callChart")
+| fields timestamp, content
+| limit 5
+```
+
+Open one row and read the full text.
+
+The callChart line lists every downstream call with its duration, like
+`Relationship call (183ms)`. Looking for whether calls that SUCCEEDED during the
+incident were taking seconds rather than milliseconds.
+
+Why this matters more than anything measured so far - see "Timeouts cannot fill the
+bulkhead" below.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
@@ -322,6 +343,41 @@ upper bound near the 4s timeout rather than proof of it.
 
 Together these explain why 1,188 timeouts filled the bulkhead on Sep 3 while 970 did
 not on Sep 7: same timeout, multiplied by retries and by accounts per request.
+
+### Calls per request - fan-out ruled out
+
+```
+mfd-vndr-accts-rest   828 requests     881 calls   p50 1.0   p95 1.0   max 4
+rms-rltshp-svc      1,091 requests   1,091 calls   p50 1.0   p95 1.0   max 1
+```
+
+Both are one call per request. The fan-out theory was wrong.
+
+The Sep 3 window used for this ran 08:00-10:00 local, which missed the 11:00 peak, so
+828 is not the busy period. Does not change the conclusion - p50 and p95 are both 1.0.
+
+### Timeouts cannot fill the bulkhead
+
+Arithmetic on the Sep 3 peak hour:
+
+```
+1,188 timeouts / 3600 seconds        = 0.33 per second
+0.33 per second x 4 seconds held     = 1.3 concurrent slots
+```
+
+The bulkhead is 50, spread across 10 pods. 1.3 slots is a rounding error.
+
+Aug 10 worked out differently only because 8,127 timeouts landed in 18 minutes rather
+than across an hour - 7.5 per second, which does reach roughly 30 slots. Sep 3 has
+nothing like that shape.
+
+So what fills the bulkhead is almost certainly the calls that DO NOT time out. If a
+downstream is answering in 2-3 seconds instead of 200ms, thousands of successful calls
+are each holding a thread for seconds, and none of them log anything. The timeouts are
+the visible tail of that, not the cause.
+
+This would explain why timeout counts have never predicted saturation across any of
+these incidents. Section 6 tests it.
 
 ### What this changes
 
