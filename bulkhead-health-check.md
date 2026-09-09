@@ -993,6 +993,44 @@ start after, the control plane may be closer to the cause.
 
 This is the one that tells you whether DKP is the origin or another casualty.
 
+### 18a-2. Widen the window - 18a was truncated
+
+18a ran from 16:16:00 and the earliest cluster appeared at 16:16:04, four seconds in.
+That is the window boundary, not necessarily the true start. Widen it.
+
+```
+fetch logs, from: "2026-09-03T16:05:00Z", to: "2026-09-03T16:22:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize first_timeout = min(timestamp),
+            last_timeout  = max(timestamp),
+            timeouts      = count(),
+            by: {k8s.cluster.name}
+| sort first_timeout asc
+```
+
+Sort by `first_timeout`, not by count - the UI defaults to sorting by the numeric
+column and that hides the ordering.
+
+From the truncated run, the sequence was:
+
+```
+16:16:04   dkp-prod-phx-external
+16:16:12   dkp-prod-phx-general
+16:16:37   dkp-prod-stl-general
+16:17:11   DKP apiserver "http: Handler timeout"
+16:17:21   dkp-prod-stl-external
+16:17:34   aks04074prscu01 (CDDR)
+16:17:40   aks03231prscu01
+```
+
+DKP clusters lead the AKS clusters by roughly 70 seconds, with DKP's own control
+plane timing out between the two groups. If that holds with a wider window, the
+stall started on DKP and propagated outward to everything calling into it.
+
+If the wider window shows DKP starting even earlier, keep widening until the first
+timeout is comfortably inside the window rather than at its edge.
+
 ### 18b. Does it happen at a consistent time
 
 Every event so far falls between 07:00 and 12:30 local. If they cluster at a
