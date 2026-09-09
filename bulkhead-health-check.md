@@ -271,6 +271,55 @@ bulkhead" below.
 
 ---
 
+## 7. Is the bulkhead metric in Dynatrace
+
+Verifies the claim that `resilience4j_bulkhead_*` is not ingested for CDDR. Last
+checked 2026-08-27 - re-run before relying on it.
+
+### 7a. Any bulkhead metric at all, from any app
+
+```
+fetch metric.series
+| filter matchesPhrase(metric.key, "bulkhead")
+| summarize series = count(), by: {metric.key}
+| sort metric.key asc
+```
+
+Expect rows like `pps-ps-api.resilience4j.bulkhead.available.concurrent.calls`. Note
+the app-name prefix and the dots - other teams get theirs in with a different naming
+convention. Anything starting `cddr` would sort between `cache_gets_total` and
+`fsd-annuity`.
+
+### 7b. Every metric Dynatrace holds for CDDR
+
+This is the definitive check.
+
+```
+fetch metric.series
+| filter k8s.namespace.name == "cddr-ns"
+| summarize series = count(), by: {metric.key}
+| sort metric.key asc
+```
+
+If the list is only Kubernetes and OneAgent metrics with nothing from the actuator
+endpoint, the gap is confirmed. If actuator metrics appear under names we have not
+searched for, the gap is not real and the earlier conclusion was wrong.
+
+### 7c. Broader search, both naming conventions
+
+```
+fetch metric.series
+| filter matchesPhrase(metric.key, "resilience4j")
+| summarize series = count(), by: {metric.key}
+| sort metric.key asc
+```
+
+Searching for `resilience4j_bulkhead` with underscores alone will miss the dotted
+form. CDDR's cache metrics arrive dotted (`cache.gets`, not `cache_gets_total`), so
+the same may apply here.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
