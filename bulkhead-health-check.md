@@ -843,6 +843,80 @@ answer has to come from whoever operates apps2/apps3 or the network path to them
 
 ---
 
+## 16. The backends are on DKP - read their side
+
+15a found them. `apps2.edwardjones.com` fronts workloads running on the DKP clusters:
+
+```
+dkp-prod-phx-general   rms-relationship-service   rms-rltshp-svc-*
+dkp-prod-phx-general   mfd-networking             mfd-vndr-accts-rest-*
+dkp-prod-phx-general   gna-accounts               gna-accounts-svc-*
+dkp-prod-phx-general   gna-accounts               gna-restrictions-*
+dkp-prod-stl-general   gna-accounts               gna-accounts-svc-*
+```
+
+And 13a showed `dkp-prod-phx-general` timing out at 09:17 as well, then spiking to
+7,235 at 09:22. The clusters hosting the backends were stalling too.
+
+Keep windows tight - 15a scanned 34 TiB.
+
+### 16a. What the backends logged at 09:17
+
+```
+fetch logs, from: "2026-09-03T16:16:00Z", to: "2026-09-03T16:19:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter in(k8s.cluster.name, {"dkp-prod-phx-general", "dkp-prod-stl-general"})
+| filter in(k8s.namespace.name, {"rms-relationship-service", "mfd-networking", "gna-accounts"})
+| filter loglevel == "ERROR" or loglevel == "WARN"
+| summarize lines = count(), by: {k8s.namespace.name, k8s.deployment.name, loglevel}
+| sort lines desc
+| limit 30
+```
+
+### 16b. What were THEY timing out on
+
+If the backends were themselves blocked on something - a database, a mainframe, an
+auth service - that is the origin rather than the network.
+
+```
+fetch logs, from: "2026-09-03T16:16:00Z", to: "2026-09-03T16:19:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter in(k8s.cluster.name, {"dkp-prod-phx-general", "dkp-prod-stl-general"})
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+      or matchesPhrase(content, "timeout")
+| summarize lines = count(), by: {k8s.namespace.name, k8s.deployment.name}
+| sort lines desc
+| limit 30
+```
+
+### 16c. Baseline for the DKP side
+
+Same as 12a but for DKP - is 09:17 unusual there, or normal background?
+
+```
+fetch logs, from: "2026-09-03T12:00:00Z", to: "2026-09-03T20:00:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter k8s.cluster.name == "dkp-prod-phx-general"
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts = count(), by: {minute = bin(timestamp, 1m)}
+| sort minute asc
+```
+
+### 16d. Sample the actual error text
+
+```
+fetch logs, from: "2026-09-03T16:16:00Z", to: "2026-09-03T16:19:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter k8s.cluster.name == "dkp-prod-phx-general"
+| filter k8s.namespace.name == "rms-relationship-service"
+| filter loglevel == "ERROR"
+| fields timestamp, k8s.deployment.name, content
+| limit 5
+```
+
+Read one in full. Whatever `rms-rltshp-svc` was failing on at 09:17 is one hop closer
+to the origin.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
