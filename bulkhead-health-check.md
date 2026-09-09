@@ -1119,6 +1119,51 @@ Only problems that opened between 16:00 and 16:40 UTC. Anything on a host, netwo
 device or infrastructure entity is what matters - a service-level problem is just
 another victim.
 
+### 18d-3. Open the two problems that matter
+
+18d-2 returned the Davis problems that opened on 3 Sep morning:
+
+```
+09:00:00   P-26098342   Multiple service problems
+09:05:00   P-26098344   DAS - GNA Restrictions High CPU
+09:06:00   P-26098345   Exchange Event ID 2153 Log Copier Unable to Communicate  (HOST)
+09:06:00   P-26098346   Out-of-memory kills
+09:15:00   P-26098347   FABB Svcs Time Out
+09:16:00   P-26098349   Multiple infrastructure problems      <- one minute before CDDR
+09:17:56   P-26098348   Http monitor local outage             <- synthetic check
+09:19:00   P-26098351   MGP WMP Greenfield EVEREST - SOCKET TIMEOUT EXCEPTION
+09:22:05   P-26098352   Online Access High IO Errors
+09:25:00   P-26098355   Multiple infrastructure problems
+```
+
+Two are worth opening.
+
+**P-26098349** opened at 09:16, a minute before CDDR's bulkhead filled and before the
+AKS clusters began timing out. "Multiple infrastructure problems" means Davis
+correlated several infrastructure events into one.
+
+**P-26098348** is a synthetic HTTP monitor detecting an outage at 09:17:56 -
+Dynatrace's own probe failing, independent of any application.
+
+```
+fetch dt.davis.problems, from: "2026-09-03T14:00:00Z", to: "2026-09-03T18:00:00Z"
+| filter in(display_id, {"P-26098349", "P-26098348", "P-26098344"})
+| fields display_id, event.start, event.end, event.name, event.description,
+         affected_entity_ids, root_cause_entity_name, event.category
+| limit 20
+```
+
+Faster in the UI: open the Problems app and search each display_id. The problem detail
+page shows the correlated events, affected entities and Davis's own root cause
+analysis, which the DQL fields do not fully expose.
+
+**What to look for in P-26098349:** which entities it correlated. If it names hosts,
+nodes or network devices, that is the cause. If it only names cloud applications, it
+is another aggregation of victims.
+
+**And in P-26098348:** which URL the monitor was checking and from where. A synthetic
+monitor failing tells you the path was broken, not just that applications were slow.
+
 ### 18e. Rate-based ordering - the correct version of 18a
 
 First-occurrence does not work because timeouts are constant background. What matters
