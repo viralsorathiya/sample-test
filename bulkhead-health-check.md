@@ -600,6 +600,63 @@ days first and only widen if the scan is affordable.
 
 ---
 
+## 12. The control - is a correlated minute actually unusual
+
+Section 11 shows the worst 20 minutes per day. It does not show whether those minutes
+differ from any other minute. Without that, "29 namespaces timed out together" may
+just be what a large cluster looks like every minute, and the correlation means
+nothing.
+
+Run this before escalating anything.
+
+### 12a. Distribution across a full day
+
+```
+fetch logs, from: "2026-09-03T12:00:00Z", to: "2026-09-03T20:00:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter k8s.cluster.name == "aks04074prscu01"
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts   = count(),
+            namespaces = countDistinct(k8s.namespace.name),
+            by: {minute = bin(timestamp, 1m)}
+| summarize minutes    = count(),
+            p50_ns     = percentile(namespaces, 50),
+            p95_ns     = percentile(namespaces, 95),
+            max_ns     = max(namespaces),
+            p50_to     = percentile(timeouts, 50),
+            p95_to     = percentile(timeouts, 95),
+            max_to     = max(timeouts)
+```
+
+Note the cluster filter. Section 11 had none, so its counts spanned every cluster.
+
+```
+p50 namespaces around 5, spikes to 29    the correlation is real
+p50 namespaces already 25-30             normal background, no finding
+```
+
+Same for timeouts: if p50 is 2,000 and the "spike" was 2,779, there is no spike.
+
+### 12b. The incident minutes against that baseline
+
+```
+fetch logs, from: "2026-09-03T12:00:00Z", to: "2026-09-03T20:00:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter k8s.cluster.name == "aks04074prscu01"
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts   = count(),
+            namespaces = countDistinct(k8s.namespace.name),
+            by: {minute = bin(timestamp, 1m)}
+| sort minute asc
+```
+
+Full timeline, no limit, no sort by size. Read whether 09:17 stands out from the
+minutes either side of it, or whether it sits in a continuous band.
+
+That single chart decides whether there is anything to escalate.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
