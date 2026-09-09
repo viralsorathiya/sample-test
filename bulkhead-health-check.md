@@ -126,21 +126,58 @@ For the raw list, one row per exception:
 
 ---
 
-## 3. What was timing out (only if query 2 shows ages in hours or days)
+## 3. What was timing out
+
+Run this when query 2 comes back mostly ESTABLISHED. Dates pinned to Sep 3.
 
 ```
-fetch logs, from: now()-3d, to: now(), scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+fetch logs, from: "2026-09-03T00:00:00Z", to: "2026-09-04T00:00:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
 | filter k8s.namespace.name == "cddr-ns"
 | filter contains(content, "Got retryable IO")
 | parse content, "LD 'https://' LD:target_host '/' LD"
 | summarize timeouts = count(), by: {hour = bin(timestamp, 1h), target_host}
-| sort hour desc, timeouts desc
+| sort hour asc, timeouts desc
 ```
 
-Match the hour against query 2. The host with the spike is the cause.
+The exceptions ran 09:17 to 12:17 local. Look for a host spiking in those hours.
 
-`rms-rltshp-svc` has been the recurring one. It times out at 4 seconds and CDDR calls
-it once per request, so at volume it holds around 30 of the 50 bulkhead slots.
+`rms-rltshp-svc` has been the driver every previous time. It times out at 4 seconds
+and CDDR calls it once per request, so at volume it holds around 30 of the 50
+bulkhead slots. If it appears again that is five occurrences, which is a pattern
+rather than a one-off.
+
+Sep 3 was also the day BPP could not authenticate with ForgeRock, so
+`bpp-account-svc` may show up. Treat that with suspicion as a cause - those 502s
+returned in 54ms, and a call failing that fast does not hold a bulkhead slot long
+enough to matter.
+
+### 3b. Minute by minute, if you need to line it up precisely
+
+```
+fetch logs, from: "2026-09-03T14:00:00Z", to: "2026-09-03T18:00:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter contains(content, "Got retryable IO") or matchesPhrase(content, "BulkheadFullException")
+| fieldsAdd kind = if(matchesPhrase(content, "BulkheadFullException"), "bulkhead", else: "downstream_timeout")
+| summarize count = count(), by: {minute = bin(timestamp, 1m), kind}
+| sort minute asc
+```
+
+Shows whether the downstream timeouts start before the bulkhead fills. They should -
+threads have to be held before the pool runs out.
+
+---
+
+## Result: 2026-09-03
+
+```
+ESTABLISHED (over 1 hour)   1,120   6 pods
+COLD START (under 60s)         41   5 pods
+no_startup_line_found           4   1 pod
+```
+
+96% established. Not a scale-up problem. Six pods that had been running over an hour
+stopped coping at the same time, which points at something they all depend on rather
+than anything about the pods themselves.
 
 ---
 
