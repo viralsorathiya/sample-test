@@ -555,6 +555,51 @@ network, not CDDR. That moves this to the platform team.
 
 ---
 
+## 11. Is the cluster-wide stall chronic
+
+10d showed 10+ unrelated namespaces timing out in the same minute on Sep 3. This
+checks whether the same thing happened on the other incident mornings.
+
+Run once per date, changing only the two timestamps. Incident days were Sep 8, Sep 3,
+Sep 2, Aug 27, Aug 26, all between 07:00 and 12:30 local.
+
+```
+fetch logs, from: "2026-09-02T13:00:00Z", to: "2026-09-02T20:00:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts    = count(),
+            namespaces  = countDistinct(k8s.namespace.name),
+            by: {minute = bin(timestamp, 1m)}
+| filter namespaces >= 5
+| sort timeouts desc
+| limit 20
+```
+
+Any minute where five or more namespaces time out together is a cluster-level stall,
+not an application fault. If those minutes line up with the bulkhead incidents on
+every date, this is chronic and recurring rather than a one-off.
+
+### 11b. All incident days at once, if the scan cost allows
+
+```
+fetch logs, from: now()-14d, to: now(), scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts   = count(),
+            namespaces = countDistinct(k8s.namespace.name),
+            by: {minute = bin(timestamp, 1m)}
+| filter namespaces >= 5
+| summarize stall_minutes = count(),
+            worst         = max(timeouts),
+            by: {day = bin(minute, 1d)}
+| sort day asc
+```
+
+Gives a count of cluster-wide stall minutes per day. Expensive - run 11 on single
+days first and only widen if the scan is affordable.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
