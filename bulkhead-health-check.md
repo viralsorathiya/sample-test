@@ -657,6 +657,45 @@ That single chart decides whether there is anything to escalate.
 
 ---
 
+## 13. Which clusters were affected at 09:17
+
+12a returned `max_ns = 2` for `aks04074prscu01`, yet 10d showed ten namespaces
+timing out at 09:17. 10d had no cluster filter, so those namespaces sit on other
+clusters. This confirms whether the stall spanned clusters.
+
+```
+fetch logs, from: "2026-09-03T16:16:00Z", to: "2026-09-03T16:19:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts = count(), by: {k8s.cluster.name, k8s.namespace.name}
+| sort timeouts desc
+```
+
+```
+several clusters listed   the stall is above the cluster layer - shared
+                          network path, DNS, or the route to apps2/apps3
+only prscu01              it is that cluster, and 10d was picking up
+                          unrelated background from elsewhere
+```
+
+### 13b. Same minute, one row per cluster
+
+```
+fetch logs, from: "2026-09-03T16:10:00Z", to: "2026-09-03T16:30:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts   = count(),
+            namespaces = countDistinct(k8s.namespace.name),
+            by: {minute = bin(timestamp, 1m), k8s.cluster.name}
+| sort minute asc, timeouts desc
+```
+
+Shows whether every cluster spikes on the same minute or whether they are offset.
+Simultaneous across clusters is close to proof of a shared network or DNS cause,
+since nothing inside a cluster can affect another one.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
