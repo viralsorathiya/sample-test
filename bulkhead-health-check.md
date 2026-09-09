@@ -364,6 +364,35 @@ The limit is 50, confirmed from `resilience4j.bulkhead.max.allowed.concurrent.ca
 This tells you how close CDDR runs to the limit under normal load - which is the
 question Adam raised on the call and nobody could answer.
 
+### 8b-2. Lowest free slots per pod - one number, no chart needed
+
+8b returns a series per pod, which is awkward to read as a table. This collapses each
+series to its minimum, so you get one row per pod showing how empty the bulkhead got.
+
+Set the notebook timeframe to **2026-09-03 16:00 - 20:00 UTC** first. That is
+09:00-13:00 local, covering the 09:17-12:17 incident. A narrow window also lets the
+1 minute interval hold - over 7 days Dynatrace forces it to 10 minutes and short
+saturation disappears.
+
+```
+timeseries available = min(`resilience4j.bulkhead.available.concurrent.calls`, default: 50),
+  filter: { k8s.namespace.name == "cddr-ns" },
+  by: { k8s.pod.name },
+  interval: 1m
+| fieldsAdd lowest_free = arrayMin(available)
+| fields k8s.pod.name, lowest_free
+| sort lowest_free asc
+```
+
+```
+lowest_free = 0      bulkhead completely full at some point
+lowest_free = 5      nearly full
+lowest_free = 47-50  normal, never under pressure
+```
+
+The limit is 50. From the 7 day view, normal sits at 47-50, so anything in single
+figures is real pressure.
+
 ### 8c. How close to the limit on a normal day
 
 ```
