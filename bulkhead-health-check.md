@@ -965,6 +965,83 @@ Meanwhile DKP's own control plane was timing out too, which no application can c
 
 ---
 
+## 18. What is still investigable from here
+
+CDDR-side analysis is finished. These three are the remaining questions that Dynatrace
+can answer without network or platform access.
+
+### 18a. Which cluster stalled first
+
+If timeouts start in one place and spread, that is directional evidence for where the
+origin is. If everything starts in the same second, it is simultaneous and points at
+something all of them touch at once - DNS, or a shared network path.
+
+```
+fetch logs, from: "2026-09-03T16:16:00Z", to: "2026-09-03T16:19:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize first_timeout = min(timestamp),
+            last_timeout  = max(timestamp),
+            timeouts      = count(),
+            by: {k8s.cluster.name}
+| sort first_timeout asc
+```
+
+Compare the earliest against DKP's apiserver timeout at **16:17:11.679**. If
+application timeouts start before that, the control plane was a victim too. If they
+start after, the control plane may be closer to the cause.
+
+This is the one that tells you whether DKP is the origin or another casualty.
+
+### 18b. Does it happen at a consistent time
+
+Every event so far falls between 07:00 and 12:30 local. If they cluster at a
+particular minute past the hour, something scheduled is involved.
+
+```
+fetch logs, from: now()-30d, to: now(), scanLimitGBytes: -1, samplingRatio: 1
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(content, "BulkheadFullException")
+| summarize exceptions = count(), by: {minute = bin(timestamp, 1m)}
+| fieldsAdd minute_of_hour = formatTimestamp(minute, format: "mm")
+| summarize events = count(), total = sum(exceptions), by: {minute_of_hour}
+| sort events desc
+| limit 20
+```
+
+A flat spread means it is random. A concentration at particular minutes means a job,
+a backup, a certificate refresh or a scan.
+
+### 18c. Is it getting worse
+
+```
+fetch logs, from: now()-30d, to: now(), scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts   = count(),
+            namespaces = countDistinct(k8s.namespace.name),
+            clusters   = countDistinct(k8s.cluster.name),
+            by: {minute = bin(timestamp, 1m)}
+| filter clusters >= 5
+| summarize stall_minutes = count(),
+            worst_minute  = max(timeouts),
+            by: {day = bin(minute, 1d)}
+| sort day asc
+```
+
+Counts the minutes per day where five or more clusters timed out together. Gives a
+frequency trend and tells the platform team whether this is stable or degrading.
+
+Expensive - run 18a and 18b first.
+
+### What cannot be answered from here
+
+Why multiple clusters across two platforms and two sites stall together needs network
+telemetry, Azure or DKP platform logs, or DNS query logs. None of that is visible from
+the application side.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
