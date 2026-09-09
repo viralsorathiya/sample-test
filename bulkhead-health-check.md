@@ -369,10 +369,14 @@ question Adam raised on the call and nobody could answer.
 8b returns a series per pod, which is awkward to read as a table. This collapses each
 series to its minimum, so you get one row per pod showing how empty the bulkhead got.
 
-Set the notebook timeframe to **2026-09-03 16:00 - 20:00 UTC** first. That is
-09:00-13:00 local, covering the 09:17-12:17 incident. A narrow window also lets the
-1 minute interval hold - over 7 days Dynatrace forces it to 10 minutes and short
-saturation disappears.
+Set the timeframe picker to **Sep 3, 09:00 - 13:00**.
+
+The picker uses LOCAL time, not UTC. The Sep 3 exceptions ran 09:17-12:17 local, so
+those are the numbers to type in. Entering the UTC equivalent puts you hours past the
+incident.
+
+A narrow window also matters because over 7 days Dynatrace overrides `interval: 1m`
+and uses 10 minutes instead, which averages away any saturation shorter than that.
 
 ```
 timeseries available = min(`resilience4j.bulkhead.available.concurrent.calls`, default: 50),
@@ -409,6 +413,69 @@ masking.
 Caveat: this is a gauge, sampled per minute. Short bursts lasting under a minute may
 not appear. Good for sustained saturation like Sep 3; will miss the 100ms cold-start
 spikes.
+
+---
+
+## 9. Tracing upstream - where does the stall start
+
+### 9a. One host or all of them, minute by minute
+
+The decisive test. If a single host spikes at 09:17 it is that service. If every host
+spikes together, the cause is the shared path - gateway, network or DNS - and no
+individual service owner will find anything.
+
+```
+fetch logs, from: "2026-09-03T16:10:00Z", to: "2026-09-03T16:30:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter contains(content, "Got retryable IO")
+| parse content, "LD 'https://' LD:target_host '/' LD"
+| summarize timeouts = count(), by: {minute = bin(timestamp, 1m), target_host}
+| sort minute asc, timeouts desc
+```
+
+```
+one host spikes at 09:17     that service stalled - go to its owner
+all hosts spike together     shared infrastructure in front of apps2
+nothing spikes at 09:17      the stall did not produce timeouts, so calls
+                             were slow but still completing - see 9c
+```
+
+### 9b. Are the upstream services monitored in Dynatrace
+
+If they run in an observed cluster you can read their side directly instead of
+inferring from CDDR's client view.
+
+```
+fetch logs, from: now()-1d, to: now(), scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(k8s.namespace.name, "mfd")
+      or matchesPhrase(k8s.namespace.name, "gna")
+      or matchesPhrase(k8s.namespace.name, "rms")
+      or matchesPhrase(k8s.namespace.name, "ins-account")
+| summarize lines = count(), by: {k8s.namespace.name, k8s.cluster.name}
+| sort lines desc
+```
+
+Also worth checking the Services list in the Dynatrace UI for `mfd-vndr`,
+`gna-accounts`, `rms-rltshp`. A monitored service gives you their error rate and
+response time; an unmonitored one appears only as an outbound HTTP destination.
+
+### 9c. Were calls slow without timing out
+
+The 09:17 dip came with a 29% drop in log volume, so requests stalled rather than
+failed. Slow-but-successful calls hold bulkhead slots and log nothing, which is why
+timeout counts have never lined up.
+
+```
+fetch logs, from: "2026-09-03T16:15:00Z", to: "2026-09-03T16:20:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(content, "callChart")
+| fields timestamp, content
+| limit 10
+```
+
+Read the durations in the callChart lines. Normal is 29-183ms. If calls during that
+minute show seconds, that is the stall, and the host named alongside is where it
+started.
 
 ---
 
