@@ -320,6 +320,69 @@ the same may apply here.
 
 ---
 
+## 8. The metric DOES exist - confirm and use it
+
+7c found `resilience4j.bulkhead.available.concurrent.calls` with 16 series, unprefixed
+and dotted. Earlier searches used `resilience4j_bulkhead` with underscores and missed
+it. Same trap as the cache metrics, which arrive as `cache.gets` rather than
+`cache_gets_total`.
+
+### 8a. Does it belong to CDDR
+
+```
+fetch metric.series
+| filter metric.key == "resilience4j.bulkhead.available.concurrent.calls"
+| summarize series = count(), by: {k8s.namespace.name, k8s.deployment.name, k8s.cluster.name}
+| sort series desc
+```
+
+If `cddr-ns` appears, saturation is directly measurable and the log-based guesswork
+was unnecessary.
+
+### 8b. Saturation on Sep 3 - the answer we have been chasing
+
+Set the notebook timeframe to 2026-09-03, or leave the filter and adjust the
+timeframe picker.
+
+```
+timeseries available = min(`resilience4j.bulkhead.available.concurrent.calls`, default: 50),
+  filter: { k8s.namespace.name == "cddr-ns" },
+  by: { k8s.pod.name },
+  interval: 1m
+```
+
+`min` per minute is the low-water mark. Read it as:
+
+```
+available = 0     bulkhead completely full, requests being rejected
+available = 5     nearly full
+available = 48    normal, two calls in flight
+```
+
+The limit is 50, confirmed from `resilience4j.bulkhead.max.allowed.concurrent.calls`.
+
+This tells you how close CDDR runs to the limit under normal load - which is the
+question Adam raised on the call and nobody could answer.
+
+### 8c. How close to the limit on a normal day
+
+```
+timeseries available = min(`resilience4j.bulkhead.available.concurrent.calls`, default: 50),
+  filter: { k8s.namespace.name == "cddr-ns" },
+  interval: 1h
+```
+
+Run over 7 days. If the daily low-water mark sits at 45+ on quiet days and drops to 0
+only during incidents, 50 is a reasonable limit. If it regularly dips into single
+figures, the limit is too tight and raising it is a legitimate option rather than
+masking.
+
+Caveat: this is a gauge, sampled per minute. Short bursts lasting under a minute may
+not appear. Good for sustained saturation like Sep 3; will miss the 100ms cold-start
+spikes.
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
