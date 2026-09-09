@@ -1072,7 +1072,67 @@ frequency trend and tells the platform team whether this is stable or degrading.
 
 Expensive - run 18a and 18b first.
 
-### What cannot be answered from here
+### 18d. Davis problems across the whole estate at 09:17
+
+Cheapest first. Davis correlates across entities and may already have raised an
+infrastructure problem nobody linked to this.
+
+```
+fetch events, from: "2026-09-03T15:45:00Z", to: "2026-09-03T16:45:00Z", scanLimitGBytes: -1
+| filter event.kind == "DAVIS_PROBLEM"
+| fields event.start, event.end, display_id, event.name, dt.davis.is_duplicate,
+         affected_entity_ids, root_cause_entity_name
+| sort event.start asc
+| limit 50
+```
+
+Look for anything on hosts, network, or infrastructure entities rather than services.
+A Davis problem on a node or network device at 09:17 would name the cause outright.
+
+If `fetch events` returns nothing useful, try the problems feed in the UI filtered to
+that hour, with the entity filter cleared so it shows infrastructure as well as
+services.
+
+### 18e. Rate-based ordering - the correct version of 18a
+
+First-occurrence does not work because timeouts are constant background. What matters
+is which cluster's RATE rises above its own baseline first.
+
+```
+fetch logs, from: "2026-09-03T16:05:00Z", to: "2026-09-03T16:25:00Z", scanLimitGBytes: -1, samplingRatio: 1
+| filter matchesPhrase(content, "SocketTimeoutException")
+      or matchesPhrase(content, "Read timed out")
+| summarize timeouts = count(), by: {minute = bin(timestamp, 1m), k8s.cluster.name}
+| sort minute asc, timeouts desc
+```
+
+Read it minute by minute. Each cluster has its own normal level - some run at 5 a
+minute, some at 50. What you are looking for is the minute where a cluster jumps well
+above its own baseline, and whether one does so before the others.
+
+Chart it by cluster if the table is hard to read. A staggered rise is directional
+evidence; simultaneous is evidence of something they all touch at once.
+
+### 18f. Host and node metrics on DKP
+
+If the DKP nodes had a network or CPU event, it would show here.
+
+```
+fetch metric.series
+| filter matchesPhrase(metric.key, "dt.host")
+      or matchesPhrase(metric.key, "network")
+| summarize series = count(), by: {metric.key}
+| sort metric.key asc
+| limit 50
+```
+
+Then chart whichever network or CPU metric exists for the DKP hosts across
+09:10-09:25, `by: {dt.entity.host}`, `interval: 1m`.
+
+Retransmits, dropped packets, or a CPU spike on the nodes at 09:17 would move this
+from "something shared stalled" to a named cause.
+
+### What is unlikely to be answerable from here
 
 Why multiple clusters across two platforms and two sites stall together needs network
 telemetry, Azure or DKP platform logs, or DNS query logs. None of that is visible from
