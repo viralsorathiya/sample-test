@@ -203,6 +203,53 @@ The callChart lines list each downstream call with its duration, like
 
 ---
 
+## 5. Calls per request - the fan-out check
+
+How many times does one inbound request call `mfd-vndr-accts-rest`? The URL is
+per-account (`/accounts/{id}/mutual-fund-vendor-accts`), so a planning group with
+several accounts makes several calls.
+
+```
+fetch logs, from: "2026-09-03T15:00:00Z", to: "2026-09-03T17:00:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter contains(content, "Got retryable IO")
+| filter contains(content, "mfd-vndr-accts-rest")
+| parse content, "LD 'requestId=' LD:req_id ',' LD"
+| filter isNotNull(req_id)
+| summarize calls = count(), by: {req_id}
+| summarize requests      = count(),
+            total_calls   = sum(calls),
+            max_per_req   = max(calls),
+            p50_per_req   = percentile(calls, 50),
+            p95_per_req   = percentile(calls, 95)
+```
+
+Compare against `rms-rltshp-svc`, measured at 1.00 calls per request. If this comes
+back at five or ten, that is the difference between Sep 3 filling the bulkhead and
+Sep 7 not.
+
+Note these counts include retry attempts - the log line says "going to retry for the
+1 time", so one logical call can produce more than one line.
+
+### 5b. Same, for rms-rltshp on Sep 7, as the comparison
+
+```
+fetch logs, from: "2026-09-07T17:00:00Z", to: "2026-09-07T19:00:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter contains(content, "Got retryable IO")
+| filter contains(content, "rms-rltshp-svc")
+| parse content, "LD 'requestId=' LD:req_id ',' LD"
+| filter isNotNull(req_id)
+| summarize calls = count(), by: {req_id}
+| summarize requests      = count(),
+            total_calls   = sum(calls),
+            max_per_req   = max(calls),
+            p50_per_req   = percentile(calls, 50),
+            p95_per_req   = percentile(calls, 95)
+```
+
+---
+
 ## Results so far
 
 ### 2026-09-03 - pod age at exception
@@ -247,6 +294,34 @@ cln-loans-details-svc     70
 
 Six services timing out in the same hour, and **zero bulkhead exceptions**. Similar
 volume to Sep 3, opposite outcome.
+
+### Raw timeout line, 2026-09-03
+
+```
+[WARN]~2026-09-03-16.30.07.543GMT [callerUserId=..., requestId=0a6700a8-5fa4-4fe4-be38-cbb5d98d0de4,
+callerSysId=CDDR, correlationId=..., callerAppName=cddr-flex-gw, requestStartTime=1788453003382]
+com.edwardjones.odi.ods.dgs.config.resttemplate.AppHttpRequestRetryStrategy odi-ods-dgs-svc-worker-0
+Got retryable IOException of class java.net.SocketTimeoutException from HttpRequest GET
+https://mfd-vndr-accts-rest.apps2.edwardjones.com/accounts/150171173/mutual-fund-vendor-accts,
+going to retry for the 1 time, IOException message Read timed out
+```
+
+Three things in it:
+
+- `SocketTimeoutException` / "Read timed out" - the connection was established and CDDR
+  waited. A thread is held for the full timeout. Contrast the BPP 502s, which died at
+  TLS handshake in 54ms and held nothing.
+- "going to retry for the 1 time" - CDDR retries, so one logical call holds a thread
+  for roughly double the timeout. Not accounted for in any earlier concurrency maths.
+- The URL is per-account. A planning group with five accounts makes five calls.
+  `rms-rltshp-svc` was measured at 1.00 calls per request; this one fans out.
+
+`requestStartTime=1788453003382` against the 16:30:07.543 log timestamp gives 4,161ms.
+That is time since the inbound request started, not this call alone, so treat it as an
+upper bound near the 4s timeout rather than proof of it.
+
+Together these explain why 1,188 timeouts filled the bulkhead on Sep 3 while 970 did
+not on Sep 7: same timeout, multiplied by retries and by accounts per request.
 
 ### What this changes
 
