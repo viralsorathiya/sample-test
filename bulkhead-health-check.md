@@ -1164,6 +1164,48 @@ is another aggregation of victims.
 **And in P-26098348:** which URL the monitor was checking and from where. A synthetic
 monitor failing tells you the path was broken, not just that applications were slow.
 
+### 18d-4. Did other synthetic monitors fail at 09:17
+
+P-26098349 turned out to be one app's custom error-rate alert (adv-sao-initiation),
+not an infrastructure event. P-26098348 was a single failed run of Vault-PRD-http from
+one of four locations (stl-prod-general, Connection timeout). One run is thin.
+
+There are 521 synthetic monitors. Synthetic probes involve no application code, so if
+many failed in the same minute that is independent proof of a network event.
+
+Timestamps in the UI read -07:00, so 09:17 local = 16:17 UTC.
+
+```
+fetch dt.davis.events, from: "2026-09-03T15:30:00Z", to: "2026-09-03T17:00:00Z"
+| filter event.provider == "SYNTHETIC"
+| filter event.start >= toTimestamp("2026-09-03T16:00:00Z")
+     and event.start <= toTimestamp("2026-09-03T16:40:00Z")
+| fields event.start, event.end, event.name, event.description, affected_entity_ids
+| sort event.start asc
+| limit 50
+```
+
+If `dt.davis.events` errors, replace the first line with:
+
+```
+fetch events, from: "2026-09-03T15:30:00Z", to: "2026-09-03T17:00:00Z"
+```
+
+How to read it:
+
+```
+many monitors failing 16:16-16:19     network event - and the Location column in
+                                      each description shows where it was seen from
+
+only Vault-PRD-http                   this lead is a coincidence, drop it
+
+failures all from stl-prod-general    the problem was at that location's network path
+```
+
+Note this only shows monitors whose failure crossed Davis's threshold. A monitor that
+failed once and recovered may not raise an event, so an empty result is not proof
+that nothing failed.
+
 ### 18e. Rate-based ordering - the correct version of 18a
 
 First-occurrence does not work because timeouts are constant background. What matters
