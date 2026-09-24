@@ -124,3 +124,153 @@ on the dashboard, otherwise someone raises the weekend as an incident.
 
 `sum` is right for these metrics: they are counters, so summing within each interval
 gives lookups per interval.
+
+---
+
+# Part 2 - Account and contact usage (Maosheng, 22 Sep)
+
+His ask: "do we have metrics for usage for account and contact queries? I am trying
+to find out metrics before turning on cache for account and contact" ... "just group
+downstream service call for" these two:
+
+```
+https://gna-accounts-svc.apps2.edwardjones.com/v2/accounts/{accountId}
+https://con-contacts-rest.apps2.edwardjones.com/contacts/{contactId}?taxInfo=Y
+```
+
+Context: `account` and `contact` are two of the 8 Redis caches that are switched off
+on purpose (Aiping confirmed, Aug 21). This is the data for deciding whether to switch
+them on.
+
+Two possible sources:
+
+```
+callChart log line   proven - already used in the BPP notebook and bulkhead work.
+                     One line per request, lists every downstream call with its ms.
+                     Gives volume and latency. No account/contact IDs.
+spans                not yet tried on CDDR. Carries the full URL, so it has the IDs.
+                     Only needed for the repeat-rate tile.
+```
+
+## Step 0 - how callChart names these two calls (run first)
+
+```
+fetch logs, from: now()-1h, scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(content, "callChart")
+| fields timestamp, content
+| limit 5
+```
+
+Open one row. Known labels so far: `Relationship call (183ms)`,
+`BankingPartnerPlatformAccountSummary call (54ms)`. Find the label for the
+accounts call and the contacts call, and write them down exactly.
+
+## Tile 5a - calls per 5 min, from callChart (use this one)
+
+Put the two labels from Step 0 in place of ACCOUNT_LABEL and CONTACT_LABEL.
+
+```
+fetch logs, scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(content, "callChart")
+| fieldsAdd acct = if(contains(content, "ACCOUNT_LABEL call ("), 1, else: 0),
+            cont = if(contains(content, "CONTACT_LABEL call ("), 1, else: 0)
+| makeTimeseries account_calls = sum(acct), contact_calls = sum(cont), interval: 5m
+```
+
+Counts requests that made the call. If one request calls accounts twice, it counts
+once. No `from:` so the tile follows the dashboard timeframe.
+
+## Tile 5b - how slow those calls are
+
+Slow calls are the other reason to cache. Same labels.
+
+```
+fetch logs, scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(content, "callChart")
+| parse content, "LD 'ACCOUNT_LABEL call (' INT:acct_ms 'ms)' LD"
+| filter isNotNull(acct_ms)
+| makeTimeseries p50 = percentile(acct_ms, 50), p95 = percentile(acct_ms, 95), interval: 15m
+```
+
+Copy it once more with CONTACT_LABEL for the contacts line.
+
+---
+
+The rest of Part 2 (spans) is only for the repeat-rate tile. Skip it if Maosheng
+only wants volume.
+
+Source: spans (outgoing HTTP calls). Field names checked against the Dynatrace
+semantic dictionary: span.kind, server.address, url.path, url.full.
+
+## Step 1 - check the data exists (run first, last 1 hour)
+
+```
+fetch spans, from: now()-1h
+| filter span.kind == "client"
+| filter server.address == "gna-accounts-svc.apps2.edwardjones.com"
+      or server.address == "con-contacts-rest.apps2.edwardjones.com"
+| fields start_time, server.address, url.path, http.response.status_code,
+         k8s.namespace.name, k8s.pod.name, dt.entity.service,
+         supportability.atm_sampling_ratio, aggregation.count
+| limit 20
+```
+
+Look at three things:
+
+```
+rows at all?                    no rows -> CDDR's calls are not traced; stop and tell me
+k8s.namespace.name              should say cddr-ns. If empty, tell me what IS filled
+                                in (dt.entity.service or k8s.pod.name) - I'll swap the filter
+supportability.atm_sampling_ratio   empty or 1 -> counts are exact
+                                    above 1 -> spans are sampled, use the Step 2b version
+```
+
+## Tile 5 - Calls per minute, accounts vs contacts
+
+```
+fetch spans
+| filter span.kind == "client"
+| filter k8s.namespace.name == "cddr-ns"
+| filter (server.address == "gna-accounts-svc.apps2.edwardjones.com" and startsWith(url.path, "/v2/accounts/"))
+      or (server.address == "con-contacts-rest.apps2.edwardjones.com" and startsWith(url.path, "/contacts/"))
+| fieldsAdd api = if(server.address == "gna-accounts-svc.apps2.edwardjones.com", "accounts", else: "contacts")
+| makeTimeseries calls = count(), by: {api}, interval: 1m
+```
+
+Line chart. Title: "Account and contact calls from CDDR (per minute)".
+
+## Tile 6 - Repeat rate (the number that decides the cache)
+
+Volume alone does not say whether a cache helps. What matters is how often the same
+ID is asked for again. If 1,000 calls hit 950 different accounts, a cache saves
+almost nothing. If they hit 100 accounts, it saves 90%.
+
+```
+fetch spans
+| filter span.kind == "client"
+| filter k8s.namespace.name == "cddr-ns"
+| filter (server.address == "gna-accounts-svc.apps2.edwardjones.com" and startsWith(url.path, "/v2/accounts/"))
+      or (server.address == "con-contacts-rest.apps2.edwardjones.com" and startsWith(url.path, "/contacts/"))
+| fieldsAdd api = if(server.address == "gna-accounts-svc.apps2.edwardjones.com", "accounts", else: "contacts")
+| fieldsAdd id = if(api == "accounts", substring(url.path, from: 13), else: substring(url.path, from: 10))
+| summarize calls = count(), unique_ids = countDistinct(id), by: {api, hour = bin(start_time, 1h)}
+| fieldsAdd repeat_pct = round(100.0 * (calls - unique_ids) / calls, decimals: 1)
+| sort hour asc
+```
+
+Table. repeat_pct is roughly the best hit rate a 1-hour cache could get.
+The id is only used inside the query - the tile shows counts, not account numbers.
+
+## Step 2b - only if spans are sampled
+
+In tile 5, replace `calls = count()` with:
+
+```
+calls = sum(coalesce(supportability.atm_sampling_ratio, 1) * coalesce(aggregation.count, 1))
+```
+
+Not verified on your tenant - compare against Step 1 before trusting it. Tile 6's
+repeat_pct is a ratio, so sampling affects it less; leave it as is.
