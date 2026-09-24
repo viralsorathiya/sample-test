@@ -363,8 +363,11 @@ no rows at all             spans not captured - send a screenshot
 
 ## The widget
 
+`from: now()-24h` is deliberate: 1 hour of spans scanned 28 GiB, so 7 days would be
+about 4.7 TB every time the dashboard loads.
+
 ```
-fetch spans
+fetch spans, from: now()-24h
 | filter span.kind == "client"
 | filter k8s.namespace.name == "cddr-ns"
 | filter (server.address == "gna-accounts-svc.apps2.edwardjones.com" and startsWith(url.path, "/v2/accounts/"))
