@@ -145,9 +145,9 @@ them on.
 Two possible sources:
 
 ```
-callChart log line   proven - already used in the BPP notebook and bulkhead work.
-                     One line per request, lists every downstream call with its ms.
-                     Gives volume and latency. No account/contact IDs.
+callChart log line   exists - used in the BPP notebook and bulkhead work.
+                     Lists downstream calls with their ms, and the input ID.
+                     NOT yet confirmed it is written for every request (Step 0b).
 spans                not yet tried on CDDR. Carries the full URL, so it has the IDs.
                      Only needed for the repeat-rate tile.
 ```
@@ -165,6 +165,42 @@ fetch logs, from: now()-1h, scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr
 Open one row. Known labels so far: `Relationship call (183ms)`,
 `BankingPartnerPlatformAccountSummary call (54ms)`. Find the label for the
 accounts call and the contacts call, and write them down exactly.
+
+## Step 0b - is callChart written for every request, or only failures
+
+All 5 lines from Step 0 were [WARN], and the one opened had a 404. If callChart is
+only logged when something goes wrong, it cannot count usage.
+
+```
+fetch logs, from: now()-1h, scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(content, "callChart")
+| fieldsAdd level = substring(content, from: 0, to: 7)
+| fieldsAdd has_error = if(contains(content, "Exception"), "error", else: "clean")
+| summarize lines = count(), by: {level, has_error}
+| sort lines desc
+```
+
+```
+many "clean" lines, INFO or WARN   written for every request - callChart works
+only "error" lines                 failures only - skip to Step 1 (spans)
+```
+
+## Step 0c - find the account and contact labels
+
+```
+fetch logs, from: now()-1h, scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| filter matchesPhrase(content, "callChart")
+| filter contains(content, "Account") or contains(content, "Contact")
+| fields timestamp, content
+| limit 5
+```
+
+Open a row. Look for the lines shaped like `PlanningGroup call (36ms) - ...Input:[{id}]`
+and note the words before ` call (` for the account one and the contact one.
+The part after the dash carries the ID - if it does for accounts and contacts too,
+the repeat-rate tile can come from logs and spans are not needed at all.
 
 ## Tile 5a - calls per 5 min, from callChart (use this one)
 
