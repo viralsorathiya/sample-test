@@ -186,6 +186,32 @@ many "clean" lines, INFO or WARN   written for every request - callChart works
 only "error" lines                 failures only - skip to Step 1 (spans)
 ```
 
+Result 23 Sep 22:26-23:26 local: 21 lines, all [WARN], 19 clean, 2 error.
+Everything is WARN, which suggests callChart may only be written for some requests
+(for example slow ones). Step 0d settles it.
+
+## Step 0d - callChart lines vs requests, in a busy hour
+
+23 Sep 09:00-10:00 local (16:00-17:00 UTC).
+
+```
+fetch logs, from: "2026-09-23T16:00:00Z", to: "2026-09-23T17:00:00Z", scanLimitGBytes: -1, samplingRatio: 1, bucket:{"cddr"}
+| filter k8s.namespace.name == "cddr-ns"
+| parse content, "LD 'requestId=' LD:req_id ',' LD"
+| filter isNotNull(req_id)
+| fieldsAdd is_chart = if(matchesPhrase(content, "callChart"), 1, else: 0)
+| summarize requests = countDistinct(req_id), callchart_lines = sum(is_chart)
+| fieldsAdd pct_with_chart = round(100.0 * callchart_lines / requests, decimals: 1)
+```
+
+```
+pct_with_chart near 100    one callChart per request - use it for counting
+pct_with_chart low         only some requests get one - use spans (Step 1)
+```
+
+`requests` only counts requests that logged anything, so it is a floor. The real
+number of requests is higher, never lower.
+
 ## Step 0c - find the account and contact labels
 
 ```
@@ -310,3 +336,43 @@ calls = sum(coalesce(supportability.atm_sampling_ratio, 1) * coalesce(aggregatio
 
 Not verified on your tenant - compare against Step 1 before trusting it. Tile 6's
 repeat_pct is a ratio, so sampling affects it less; leave it as is.
+
+---
+
+# Part 3 - THE widget Maosheng asked for (use this, ignore the extras above)
+
+His words: "just group downstream service call for" the accounts URL and the contacts
+URL. One line per URL, all IDs grouped together.
+
+## Check first (Notebook, last 1 hour)
+
+```
+fetch spans, from: now()-1h
+| filter span.kind == "client"
+| filter server.address == "gna-accounts-svc.apps2.edwardjones.com"
+      or server.address == "con-contacts-rest.apps2.edwardjones.com"
+| summarize calls = count(), by: {server.address, k8s.namespace.name}
+| sort calls desc
+```
+
+```
+rows with cddr-ns          good - use the widget below as it is
+rows, namespace empty      send a screenshot - filter needs changing
+no rows at all             spans not captured - send a screenshot
+```
+
+## The widget
+
+```
+fetch spans
+| filter span.kind == "client"
+| filter k8s.namespace.name == "cddr-ns"
+| filter (server.address == "gna-accounts-svc.apps2.edwardjones.com" and startsWith(url.path, "/v2/accounts/"))
+      or (server.address == "con-contacts-rest.apps2.edwardjones.com" and startsWith(url.path, "/contacts/"))
+| fieldsAdd endpoint = if(server.address == "gna-accounts-svc.apps2.edwardjones.com",
+                          "GET /v2/accounts/{accountId}",
+                          else: "GET /contacts/{contactId}")
+| makeTimeseries calls = count(), by: {endpoint}, interval: 5m
+```
+
+Line chart. Title: "CDDR calls to accounts and contacts (per 5 min)".
