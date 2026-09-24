@@ -363,11 +363,15 @@ no rows at all             spans not captured - send a screenshot
 
 ## The widget
 
-`from: now()-24h` is deliberate: 1 hour of spans scanned 28 GiB, so 7 days would be
-about 4.7 TB every time the dashboard loads.
+`from: now()-6h` is deliberate. 1 hour of spans scans ~28 GiB. Dynatrace stops a
+query at 500 GB by default, so 24h (~680 GB) gets cut off. Spans cannot be sampled
+(sampling is logs only, per Dynatrace docs). 6h is ~170 GB per load.
+
+For a longer view, run it once in a Notebook with `scanLimitGBytes: -1` instead of
+putting it on the dashboard.
 
 ```
-fetch spans, from: now()-24h
+fetch spans, from: now()-6h
 | filter span.kind == "client"
 | filter k8s.namespace.name == "cddr-ns"
 | filter (server.address == "gna-accounts-svc.apps2.edwardjones.com" and startsWith(url.path, "/v2/accounts/"))
