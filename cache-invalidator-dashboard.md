@@ -43,40 +43,50 @@ default  aks04074stscu01   (ppd. 28 Sep: data in dev, uat, ppd, stage-dr - not p
 
 ---
 
+## How every tile is built (changed 28 Sep)
+
+Same shape as Step 0, which is proven to return data: split by the cluster and app
+entities, then filter on their names as a pipeline step (`| filter ...`). The first
+version put `entityName()` inside `timeseries filter:`, which the Dynatrace docs do not
+document, and the tiles came back empty.
+
+`$cluster` in a pipeline filter is the documented form (docs example:
+`| filter host.name == $Host`). The value is inserted with double quotes.
+
 ## Tile 1 - Kafka messages: received, skipped, dead-lettered (line)
 
 ```
 timeseries {
-  received     = sum(`cddr.kafka.records.received`),
-  skipped      = sum(`cddr.kafka.records.skipped`),
-  dead_letter  = sum(`cddr.kafka.records.dead_lettered`)
-}, by: { topic }, interval: 1m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster },
-union: true,
-nonempty: true
+  received    = sum(`cddr.kafka.records.received`),
+  skipped     = sum(`cddr.kafka.records.skipped`),
+  dead_letter = sum(`cddr.kafka.records.dead_lettered`)
+}, by: { topic, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 1m,
+union: true
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
-`union: true` matters: without it, if one of the three metrics has no data (e.g. nothing
-was ever dead-lettered), the whole tile comes back empty.
+`union: true`: per the docs, without it only series present in all three metrics are
+returned (like an INNER JOIN), so no dead-letters would empty the tile.
 
 ## Tile 2 - Invalidations by cache and outcome (line)
 
 ```
-timeseries events = sum(`cddr.cache.invalidation`), by: { cache, outcome }, interval: 1m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+timeseries events = sum(`cddr.cache.invalidation`), by: { cache, outcome, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 1m
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
-## Tile 3 - Failure ratio per cache (table or single value)
+## Tile 3 - Failure ratio per cache (table)
 
 ```
 timeseries
   failures = sum(`cddr.cache.invalidation`, filter: { outcome == "failure" }),
   total    = sum(`cddr.cache.invalidation`),
-  by: { cache }, interval: 5m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+  by: { cache, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 5m,
+union: true
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 | fieldsAdd failure_ratio = arraySum(failures) / arraySum(total)
 | fields cache, failure_ratio
 ```
@@ -84,25 +94,25 @@ filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
 ## Tile 4 - Keys invalidated per cache (line)
 
 ```
-timeseries keys = sum(`cddr.cache.keys.invalidated`), by: { cache }, interval: 1m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+timeseries keys = sum(`cddr.cache.keys.invalidated`), by: { cache, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 1m
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
 ## Tile 5 - Message handling time p95, ms (line)
 
 ```
-timeseries handling_p95_ms = percentile(`cddr.kafka.message.handling.time`, 95), by: { topic }, interval: 1m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+timeseries handling_p95_ms = percentile(`cddr.kafka.message.handling.time`, 95), by: { topic, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 1m
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
 ## Tile 6 - Redis invalidation time per cache, ms (line)
 
 ```
-timeseries invalidate_ms = avg(`cddr.redis.invalidate.time`), by: { cache }, interval: 1m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+timeseries invalidate_ms = avg(`cddr.redis.invalidate.time`), by: { cache, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 1m
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
 ## Tile 7 - Consumer lag (line)
@@ -110,9 +120,9 @@ filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
 How far behind Kafka the app is. Rising and not coming back down = falling behind.
 
 ```
-timeseries lag_max = max(`kafka.consumer.fetch.manager.records.lag.max`), by: { client.id }, interval: 1m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+timeseries lag_max = max(`kafka.consumer.fetch.manager.records.lag.max`), by: { client.id, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 1m
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
 ## Tile 8 - Assigned partitions (line)
@@ -120,25 +130,29 @@ filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
 Drops to 0 = the consumer left the group.
 
 ```
-timeseries assigned = avg(`kafka.consumer.coordinator.assigned.partitions`), by: { client.id }, interval: 1m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+timeseries assigned = avg(`kafka.consumer.coordinator.assigned.partitions`), by: { client.id, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 1m
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
 ## Tile 9 - Why messages were skipped (line)
 
+Empty is normal if nothing was skipped.
+
 ```
-timeseries skipped = sum(`cddr.kafka.records.skipped`), by: { topic, reason }, interval: 5m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+timeseries skipped = sum(`cddr.kafka.records.skipped`), by: { topic, reason, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 5m
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
 ## Tile 10 - Redis failures by exception (line)
 
+Empty is normal if nothing failed.
+
 ```
-timeseries failures = sum(`cddr.redis.invalidation.failures`), by: { cache, exception }, interval: 5m,
-filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+timeseries failures = sum(`cddr.redis.invalidation.failures`), by: { cache, exception, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 5m
+| filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
+     and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
 ---
