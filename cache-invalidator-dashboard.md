@@ -52,8 +52,13 @@ timeseries {
   dead_letter  = sum(`cddr.kafka.records.dead_lettered`)
 }, by: { topic }, interval: 1m,
 filter: { entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
-      and entityName(dt.entity.kubernetes_cluster) == $cluster }
+      and entityName(dt.entity.kubernetes_cluster) == $cluster },
+union: true,
+nonempty: true
 ```
+
+`union: true` matters: without it, if one of the three metrics has no data (e.g. nothing
+was ever dead-lettered), the whole tile comes back empty.
 
 ## Tile 2 - Invalidations by cache and outcome (line)
 
