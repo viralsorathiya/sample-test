@@ -32,7 +32,8 @@ no rows                                   app not sending data yet - tell Maoshe
 
 ## Step 1 - dashboard variable
 
-Dashboard -> settings (gear) -> Variables -> add:
+Dashboard -> settings (gear) -> Variables -> add. Choose the **List** type (not Code) -
+an empty Code variable makes every tile return 0 records with no error.
 
 ```
 name     cluster
@@ -99,10 +100,18 @@ timeseries keys = sum(`cddr.cache.keys.invalidated`), by: { cache, dt.entity.kub
      and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
 
-## Tile 5 - Message handling time p95, ms (line)
+## Tile 5 - Message handling time, avg and max, ms (line)
+
+The app doc's p95 version fails in Dynatrace: "timeseries percentile function requires
+a rollup with the given metric key(s)". The metric is not stored in a form Dynatrace
+can take a true p95 from, so avg and max are used instead.
 
 ```
-timeseries handling_p95_ms = percentile(`cddr.kafka.message.handling.time`, 95), by: { topic, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 1m
+timeseries {
+  avg_ms = avg(`cddr.kafka.message.handling.time`),
+  max_ms = max(`cddr.kafka.message.handling.time`)
+}, by: { topic, dt.entity.kubernetes_cluster, dt.entity.cloud_application }, interval: 1m,
+union: true
 | filter entityName(dt.entity.cloud_application) == "cddr-cache-invalidator"
      and entityName(dt.entity.kubernetes_cluster) == $cluster
 ```
