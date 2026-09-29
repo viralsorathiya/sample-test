@@ -38,7 +38,7 @@ Dashboard -> settings (gear) -> Variables -> add:
 name     cluster
 type     list
 values   aks04074dvscu01, aks04074tescu01, aks04074stscu01, aks04074stncu01, aks04074prscu01, aks04074prncu01
-default  whichever cluster Step 0 showed data for
+default  aks04074stscu01   (ppd. 28 Sep: data in dev, uat, ppd, stage-dr - not prod yet)
 ```
 
 ---

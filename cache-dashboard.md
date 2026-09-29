@@ -50,7 +50,7 @@ filter: {
 union: true,
 nonempty: true
 | fieldsAdd hit_rate = 100 * hits[] / (hits[] + misses[])
-| fields cache, hit_rate
+| fields timeframe, interval, cache, hit_rate
 ```
 
 Line chart, y-axis 0-100, unit percent.
@@ -94,7 +94,7 @@ filter: {
 union: true,
 nonempty: true
 | fieldsAdd lookups = hits[] + misses[]
-| fields cache, lookups
+| fields timeframe, interval, cache, lookups
 ```
 
 ---
